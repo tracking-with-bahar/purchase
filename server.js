@@ -71,8 +71,11 @@ app.get("/", function (req, res) {
 
 app.post("/resolve", async function (req, res) {
 
-    var startTime = Date.now();
-    var startUrl = req.body.start_url;
+    var totalStart = Date.now();
+
+    var startUrl =
+        req.body.start_url;
+
     var context = null;
 
     if (!startUrl) {
@@ -99,74 +102,170 @@ app.post("/resolve", async function (req, res) {
 
     try {
 
-        var browserInstance = await getBrowser();
+        var browserInstance =
+            await getBrowser();
 
-        context = await browserInstance.newContext({
-            serviceWorkers: "block"
-        });
+        var browserReadyTime =
+            Date.now();
 
-        await context.route("**/*", async function (route) {
+        context =
+            await browserInstance.newContext({
+                serviceWorkers: "block"
+            });
 
-            var resourceType =
-                route.request().resourceType();
+        var contextTime =
+            Date.now();
 
-            if (
-                resourceType === "image" ||
-                resourceType === "font" ||
-                resourceType === "media"
-            ) {
+        await context.route(
+            "**/*",
+            async function (route) {
 
-                return route.abort();
+                var resourceType =
+                    route.request().resourceType();
+
+                if (
+                    resourceType === "image" ||
+                    resourceType === "font" ||
+                    resourceType === "media"
+                ) {
+
+                    return route.abort();
+
+                }
+
+                return route.continue();
 
             }
+        );
 
-            return route.continue();
+        var page =
+            await context.newPage();
 
-        });
+        var pageTime =
+            Date.now();
 
-        var page = await context.newPage();
+        console.log(
+            "Browser:",
+            browserReadyTime - totalStart,
+            "ms"
+        );
+
+        console.log(
+            "Context:",
+            contextTime - totalStart,
+            "ms"
+        );
+
+        console.log(
+            "Page:",
+            pageTime - totalStart,
+            "ms"
+        );
+
+        var gotoStart =
+            Date.now();
 
         await page.goto(startUrl, {
             waitUntil: "domcontentloaded",
             timeout: 15000
         });
 
-        await page.waitForFunction(function () {
+        var gotoEnd =
+            Date.now();
 
-            return window.location.href.indexOf(
-                "purchaseId="
-            ) !== -1;
+        console.log(
+            "GOTO:",
+            gotoEnd - gotoStart,
+            "ms"
+        );
 
-        }, {
-            timeout: 10000,
-            polling: 25
-        });
+        console.log(
+            "URL after GOTO:",
+            page.url()
+        );
 
-        var currentUrl = page.url();
+        var purchaseWaitStart =
+            Date.now();
 
-        var url = new URL(currentUrl);
+        await page.waitForFunction(
+            function () {
+
+                return window.location.href.indexOf(
+                    "purchaseId="
+                ) !== -1;
+
+            },
+            {
+                timeout: 10000,
+                polling: 25
+            }
+        );
+
+        var purchaseWaitEnd =
+            Date.now();
+
+        console.log(
+            "PURCHASE WAIT:",
+            purchaseWaitEnd - purchaseWaitStart,
+            "ms"
+        );
+
+        var currentUrl =
+            page.url();
+
+        var url =
+            new URL(currentUrl);
 
         var purchaseId =
-            url.searchParams.get("purchaseId");
-
-        if (!purchaseId) {
-
-            throw new Error(
-                "purchaseId not found"
+            url.searchParams.get(
+                "purchaseId"
             );
 
-        }
+        console.log(
+            "PURCHASE ID:",
+            purchaseId
+        );
 
-        var totalTime =
-            Date.now() - startTime;
+        var closeStart =
+            Date.now();
 
         await context.close();
+
+        var closeEnd =
+            Date.now();
+
+        console.log(
+            "CLOSE:",
+            closeEnd - closeStart,
+            "ms"
+        );
+
+        console.log(
+            "TOTAL:",
+            Date.now() - totalStart,
+            "ms"
+        );
 
         return res.json({
             success: true,
             purchase_id: purchaseId,
             final_url: currentUrl,
-            time_ms: totalTime
+            timing: {
+                browser_ms:
+                    browserReadyTime - totalStart,
+                context_ms:
+                    contextTime - browserReadyTime,
+                page_ms:
+                    pageTime - contextTime,
+                goto_ms:
+                    gotoEnd - gotoStart,
+                purchase_wait_ms:
+                    purchaseWaitEnd - purchaseWaitStart,
+                close_ms:
+                    closeEnd - closeStart,
+                total_ms:
+                    Date.now() - totalStart
+            }
         });
 
     } catch (error) {
@@ -180,14 +279,15 @@ app.post("/resolve", async function (req, res) {
         }
 
         console.error(
-            "Resolve error:",
+            "ERROR:",
             error.message
         );
 
         return res.status(500).json({
             success: false,
             error: error.message,
-            time_ms: Date.now() - startTime
+            time_ms:
+                Date.now() - totalStart
         });
 
     }
@@ -200,13 +300,17 @@ var port =
 getBrowser()
     .then(function () {
 
-        app.listen(port, function () {
+        app.listen(
+            port,
+            function () {
 
-            console.log(
-                "Server running on port " + port
-            );
+                console.log(
+                    "Server running on port " +
+                    port
+                );
 
-        });
+            }
+        );
 
     })
     .catch(function (error) {
@@ -220,22 +324,28 @@ getBrowser()
 
     });
 
-process.on("SIGTERM", async function () {
+process.on(
+    "SIGTERM",
+    async function () {
 
-    if (browser) {
-        await browser.close();
+        if (browser) {
+            await browser.close();
+        }
+
+        process.exit(0);
+
     }
+);
 
-    process.exit(0);
+process.on(
+    "SIGINT",
+    async function () {
 
-});
+        if (browser) {
+            await browser.close();
+        }
 
-process.on("SIGINT", async function () {
+        process.exit(0);
 
-    if (browser) {
-        await browser.close();
     }
-
-    process.exit(0);
-
-});
+);
