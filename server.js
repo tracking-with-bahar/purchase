@@ -71,11 +71,8 @@ app.get("/", function (req, res) {
 
 app.post("/resolve", async function (req, res) {
 
-    var totalStart = Date.now();
-
-    var startUrl =
-        req.body.start_url;
-
+    var startTime = Date.now();
+    var startUrl = req.body.start_url;
     var context = null;
 
     if (!startUrl) {
@@ -105,16 +102,10 @@ app.post("/resolve", async function (req, res) {
         var browserInstance =
             await getBrowser();
 
-        var browserReadyTime =
-            Date.now();
-
         context =
             await browserInstance.newContext({
                 serviceWorkers: "block"
             });
-
-        var contextTime =
-            Date.now();
 
         await context.route(
             "**/*",
@@ -141,140 +132,129 @@ app.post("/resolve", async function (req, res) {
         var page =
             await context.newPage();
 
-        var pageTime =
-            Date.now();
+        var purchaseId = null;
+        var finalUrl = null;
 
-        console.log(
-            "Browser:",
-            browserReadyTime - totalStart,
-            "ms"
-        );
+        var checkUrl = function () {
 
-        console.log(
-            "Context:",
-            contextTime - totalStart,
-            "ms"
-        );
+            var currentUrl = page.url();
 
-        console.log(
-            "Page:",
-            pageTime - totalStart,
-            "ms"
-        );
-
-        var gotoStart =
-            Date.now();
-
-        await page.goto(startUrl, {
-            waitUntil: "domcontentloaded",
-            timeout: 15000
-        });
-
-        var gotoEnd =
-            Date.now();
-
-        console.log(
-            "GOTO:",
-            gotoEnd - gotoStart,
-            "ms"
-        );
-
-        console.log(
-            "URL after GOTO:",
-            page.url()
-        );
-
-        var purchaseWaitStart =
-            Date.now();
-
-        await page.waitForFunction(
-            function () {
-
-                return window.location.href.indexOf(
+            if (
+                currentUrl.indexOf(
                     "purchaseId="
-                ) !== -1;
+                ) !== -1
+            ) {
 
-            },
-            {
-                timeout: 10000,
-                polling: 25
+                try {
+
+                    var url =
+                        new URL(currentUrl);
+
+                    purchaseId =
+                        url.searchParams.get(
+                            "purchaseId"
+                        );
+
+                    finalUrl =
+                        currentUrl;
+
+                } catch (error) {}
+
             }
-        );
 
-        var purchaseWaitEnd =
+        };
+
+        var navigationPromise =
+            page.goto(startUrl, {
+                waitUntil: "commit",
+                timeout: 15000
+            });
+
+        var startWait =
             Date.now();
 
-        console.log(
-            "PURCHASE WAIT:",
-            purchaseWaitEnd - purchaseWaitStart,
-            "ms"
-        );
+        while (!purchaseId) {
 
-        var currentUrl =
-            page.url();
+            checkUrl();
 
-        var url =
-            new URL(currentUrl);
+            if (purchaseId) {
+                break;
+            }
 
-        var purchaseId =
-            url.searchParams.get(
-                "purchaseId"
+            if (
+                Date.now() - startWait >
+                15000
+            ) {
+                break;
+            }
+
+            await new Promise(
+                function (resolve) {
+                    setTimeout(resolve, 25);
+                }
             );
 
-        console.log(
-            "PURCHASE ID:",
-            purchaseId
-        );
+        }
 
-        var closeStart =
-            Date.now();
+        try {
+            await navigationPromise;
+        } catch (error) {}
 
-        await context.close();
+        checkUrl();
 
-        var closeEnd =
-            Date.now();
+        if (!purchaseId) {
 
-        console.log(
-            "CLOSE:",
-            closeEnd - closeStart,
-            "ms"
-        );
+            await page.waitForFunction(
+                function () {
 
-        console.log(
-            "TOTAL:",
-            Date.now() - totalStart,
-            "ms"
-        );
+                    return window.location.href.indexOf(
+                        "purchaseId="
+                    ) !== -1;
 
-        return res.json({
+                },
+                {
+                    timeout: 5000,
+                    polling: 25
+                }
+            );
+
+            checkUrl();
+
+        }
+
+        if (!purchaseId) {
+
+            throw new Error(
+                "purchaseId not found"
+            );
+
+        }
+
+        var totalTime =
+            Date.now() - startTime;
+
+        res.json({
             success: true,
             purchase_id: purchaseId,
-            final_url: currentUrl,
-            timing: {
-                browser_ms:
-                    browserReadyTime - totalStart,
-                context_ms:
-                    contextTime - browserReadyTime,
-                page_ms:
-                    pageTime - contextTime,
-                goto_ms:
-                    gotoEnd - gotoStart,
-                purchase_wait_ms:
-                    purchaseWaitEnd - purchaseWaitStart,
-                close_ms:
-                    closeEnd - closeStart,
-                total_ms:
-                    Date.now() - totalStart
-            }
+            final_url: finalUrl,
+            time_ms: totalTime
         });
+
+        if (context) {
+
+            context.close().catch(
+                function () {}
+            );
+
+        }
 
     } catch (error) {
 
         if (context) {
 
-            try {
-                await context.close();
-            } catch (e) {}
+            context.close().catch(
+                function () {}
+            );
 
         }
 
@@ -287,7 +267,7 @@ app.post("/resolve", async function (req, res) {
             success: false,
             error: error.message,
             time_ms:
-                Date.now() - totalStart
+                Date.now() - startTime
         });
 
     }
