@@ -70,52 +70,41 @@ app.get("/", function (req, res) {
 
 app.post("/resolve", async function (req, res) {
 
+    var startTime = Date.now();
     var startUrl = req.body.start_url;
-
-    if (!startUrl) {
-
-        return res.status(400).json({
-            success: false,
-            error: "start_url is required"
-        });
-
-    }
-
-    if (
-        !startUrl.startsWith(
-            "https://members.lincolnindicators.com.au/"
-        )
-    ) {
-
-        return res.status(400).json({
-            success: false,
-            error: "Invalid start_url"
-        });
-
-    }
-
     var context = null;
+
+    console.log("REQUEST START");
 
     try {
 
         var browserInstance = await getBrowser();
 
+        console.log(
+            "Browser ready:",
+            Date.now() - startTime,
+            "ms"
+        );
+
         context = await browserInstance.newContext();
+
+        console.log(
+            "Context created:",
+            Date.now() - startTime,
+            "ms"
+        );
 
         await context.route("**/*", async function (route) {
 
-            var request = route.request();
-
-            var resourceType = request.resourceType();
+            var resourceType =
+                route.request().resourceType();
 
             if (
                 resourceType === "image" ||
                 resourceType === "font" ||
                 resourceType === "media"
             ) {
-
                 return route.abort();
-
             }
 
             return route.continue();
@@ -124,23 +113,39 @@ app.post("/resolve", async function (req, res) {
 
         var page = await context.newPage();
 
+        console.log(
+            "Page created:",
+            Date.now() - startTime,
+            "ms"
+        );
+
         await page.goto(startUrl, {
             waitUntil: "domcontentloaded",
             timeout: 15000
         });
 
+        console.log(
+            "DOM loaded:",
+            Date.now() - startTime,
+            "ms"
+        );
+
         await page.waitForFunction(function () {
 
-            var url = window.location.href;
-
-            return (
-                url.indexOf("purchaseId=") !== -1
-            );
+            return window.location.href.indexOf(
+                "purchaseId="
+            ) !== -1;
 
         }, {
             timeout: 15000,
             polling: 50
         });
+
+        console.log(
+            "purchaseId detected:",
+            Date.now() - startTime,
+            "ms"
+        );
 
         var currentUrl = page.url();
 
@@ -154,27 +159,27 @@ app.post("/resolve", async function (req, res) {
             purchaseId
         );
 
-        console.log(
-            "Final URL:",
-            currentUrl
-        );
-
         await context.close();
+
+        console.log(
+            "Context closed:",
+            Date.now() - startTime,
+            "ms"
+        );
 
         return res.json({
             success: true,
             purchase_id: purchaseId,
-            final_url: currentUrl
+            final_url: currentUrl,
+            time_ms: Date.now() - startTime
         });
 
     } catch (error) {
 
         if (context) {
-
             try {
                 await context.close();
             } catch (e) {}
-
         }
 
         console.error(
@@ -184,54 +189,10 @@ app.post("/resolve", async function (req, res) {
 
         return res.status(500).json({
             success: false,
-            error: error.message
+            error: error.message,
+            time_ms: Date.now() - startTime
         });
 
     }
-
-});
-
-var port = process.env.PORT || 10000;
-
-getBrowser()
-    .then(function () {
-
-        app.listen(port, function () {
-
-            console.log(
-                "Server running on port " + port
-            );
-
-        });
-
-    })
-    .catch(function (error) {
-
-        console.error(
-            "Browser startup failed:",
-            error
-        );
-
-        process.exit(1);
-
-    });
-
-process.on("SIGTERM", async function () {
-
-    if (browser) {
-        await browser.close();
-    }
-
-    process.exit(0);
-
-});
-
-process.on("SIGINT", async function () {
-
-    if (browser) {
-        await browser.close();
-    }
-
-    process.exit(0);
 
 });
