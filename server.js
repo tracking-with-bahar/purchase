@@ -43,7 +43,8 @@ async function getBrowser() {
         args: [
             "--no-sandbox",
             "--disable-setuid-sandbox",
-            "--disable-dev-shm-usage"
+            "--disable-dev-shm-usage",
+            "--disable-gpu"
         ]
     });
 
@@ -74,25 +75,35 @@ app.post("/resolve", async function (req, res) {
     var startUrl = req.body.start_url;
     var context = null;
 
-    console.log("REQUEST START");
+    if (!startUrl) {
+
+        return res.status(400).json({
+            success: false,
+            error: "start_url is required"
+        });
+
+    }
+
+    if (
+        !startUrl.startsWith(
+            "https://members.lincolnindicators.com.au/"
+        )
+    ) {
+
+        return res.status(400).json({
+            success: false,
+            error: "Invalid start_url"
+        });
+
+    }
 
     try {
 
         var browserInstance = await getBrowser();
 
-        console.log(
-            "Browser ready:",
-            Date.now() - startTime,
-            "ms"
-        );
-
-        context = await browserInstance.newContext();
-
-        console.log(
-            "Context created:",
-            Date.now() - startTime,
-            "ms"
-        );
+        context = await browserInstance.newContext({
+            serviceWorkers: "block"
+        });
 
         await context.route("**/*", async function (route) {
 
@@ -104,7 +115,9 @@ app.post("/resolve", async function (req, res) {
                 resourceType === "font" ||
                 resourceType === "media"
             ) {
+
                 return route.abort();
+
             }
 
             return route.continue();
@@ -113,22 +126,10 @@ app.post("/resolve", async function (req, res) {
 
         var page = await context.newPage();
 
-        console.log(
-            "Page created:",
-            Date.now() - startTime,
-            "ms"
-        );
-
         await page.goto(startUrl, {
             waitUntil: "domcontentloaded",
             timeout: 15000
         });
-
-        console.log(
-            "DOM loaded:",
-            Date.now() - startTime,
-            "ms"
-        );
 
         await page.waitForFunction(function () {
 
@@ -137,15 +138,9 @@ app.post("/resolve", async function (req, res) {
             ) !== -1;
 
         }, {
-            timeout: 15000,
-            polling: 50
+            timeout: 10000,
+            polling: 25
         });
-
-        console.log(
-            "purchaseId detected:",
-            Date.now() - startTime,
-            "ms"
-        );
 
         var currentUrl = page.url();
 
@@ -154,36 +149,38 @@ app.post("/resolve", async function (req, res) {
         var purchaseId =
             url.searchParams.get("purchaseId");
 
-        console.log(
-            "Purchase ID:",
-            purchaseId
-        );
+        if (!purchaseId) {
+
+            throw new Error(
+                "purchaseId not found"
+            );
+
+        }
+
+        var totalTime =
+            Date.now() - startTime;
 
         await context.close();
-
-        console.log(
-            "Context closed:",
-            Date.now() - startTime,
-            "ms"
-        );
 
         return res.json({
             success: true,
             purchase_id: purchaseId,
             final_url: currentUrl,
-            time_ms: Date.now() - startTime
+            time_ms: totalTime
         });
 
     } catch (error) {
 
         if (context) {
+
             try {
                 await context.close();
             } catch (e) {}
+
         }
 
         console.error(
-            "ERROR:",
+            "Resolve error:",
             error.message
         );
 
@@ -194,5 +191,51 @@ app.post("/resolve", async function (req, res) {
         });
 
     }
+
+});
+
+var port =
+    process.env.PORT || 10000;
+
+getBrowser()
+    .then(function () {
+
+        app.listen(port, function () {
+
+            console.log(
+                "Server running on port " + port
+            );
+
+        });
+
+    })
+    .catch(function (error) {
+
+        console.error(
+            "Browser startup failed:",
+            error.message
+        );
+
+        process.exit(1);
+
+    });
+
+process.on("SIGTERM", async function () {
+
+    if (browser) {
+        await browser.close();
+    }
+
+    process.exit(0);
+
+});
+
+process.on("SIGINT", async function () {
+
+    if (browser) {
+        await browser.close();
+    }
+
+    process.exit(0);
 
 });
