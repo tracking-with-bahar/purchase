@@ -6,11 +6,17 @@ const app = express();
 app.use(express.json());
 
 app.use(function (req, res, next) {
-    res.setHeader("Access-Control-Allow-Origin", "*");
+
+    res.setHeader(
+        "Access-Control-Allow-Origin",
+        "https://www.lincolnindicators.com.au"
+    );
+
     res.setHeader(
         "Access-Control-Allow-Methods",
-        "GET,POST,OPTIONS"
+        "POST,OPTIONS"
     );
+
     res.setHeader(
         "Access-Control-Allow-Headers",
         "Content-Type"
@@ -21,13 +27,45 @@ app.use(function (req, res, next) {
     }
 
     next();
+
 });
 
+var browser = null;
+
+async function getBrowser() {
+
+    if (browser && browser.isConnected()) {
+        return browser;
+    }
+
+    browser = await chromium.launch({
+        headless: true,
+        args: [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage"
+        ]
+    });
+
+    browser.on("disconnected", function () {
+        browser = null;
+    });
+
+    return browser;
+
+}
+
 app.get("/", function (req, res) {
+
     res.json({
         success: true,
-        service: "purchase-id-resolver"
+        service: "purchase-id-resolver",
+        browser_ready: !!(
+            browser &&
+            browser.isConnected()
+        )
     });
+
 });
 
 app.post("/resolve", async function (req, res) {
@@ -35,110 +73,165 @@ app.post("/resolve", async function (req, res) {
     var startUrl = req.body.start_url;
 
     if (!startUrl) {
+
         return res.status(400).json({
             success: false,
             error: "start_url is required"
         });
+
     }
 
-    var browser;
+    if (
+        !startUrl.startsWith(
+            "https://members.lincolnindicators.com.au/"
+        )
+    ) {
+
+        return res.status(400).json({
+            success: false,
+            error: "Invalid start_url"
+        });
+
+    }
+
+    var context = null;
 
     try {
 
-        browser = await chromium.launch({
-            headless: true
+        var browserInstance = await getBrowser();
+
+        context = await browserInstance.newContext();
+
+        await context.route("**/*", async function (route) {
+
+            var request = route.request();
+
+            var resourceType = request.resourceType();
+
+            if (
+                resourceType === "image" ||
+                resourceType === "font" ||
+                resourceType === "media"
+            ) {
+
+                return route.abort();
+
+            }
+
+            return route.continue();
+
         });
 
-        var page = await browser.newPage();
+        var page = await context.newPage();
 
         await page.goto(startUrl, {
             waitUntil: "domcontentloaded",
-            timeout: 30000
+            timeout: 15000
         });
 
-        var purchaseId = null;
+        await page.waitForFunction(function () {
 
-        try {
+            var url = window.location.href;
 
-            await page.waitForFunction(function () {
+            return (
+                url.indexOf("purchaseId=") !== -1
+            );
 
-                var params =
-                    new URLSearchParams(
-                        window.location.search
-                    );
+        }, {
+            timeout: 15000,
+            polling: 50
+        });
 
-                return params.has("purchaseId");
+        var currentUrl = page.url();
 
-            }, {
-                timeout: 30000
-            });
+        var url = new URL(currentUrl);
 
-            var currentUrl =
-                page.url();
-
-            var url =
-                new URL(currentUrl);
-
-            purchaseId =
-                url.searchParams.get(
-                    "purchaseId"
-                );
-
-        } catch (error) {
-
-            purchaseId = null;
-        }
-
-        console.log(
-            "Final URL:",
-            page.url()
-        );
+        var purchaseId =
+            url.searchParams.get("purchaseId");
 
         console.log(
             "Purchase ID:",
             purchaseId
         );
 
-        await browser.close();
+        console.log(
+            "Final URL:",
+            currentUrl
+        );
 
-        if (!purchaseId) {
-
-            return res.status(404).json({
-                success: false,
-                error: "purchaseId not found",
-                final_url: page.url()
-            });
-        }
+        await context.close();
 
         return res.json({
             success: true,
             purchase_id: purchaseId,
-            final_url: page.url()
+            final_url: currentUrl
         });
 
     } catch (error) {
 
-        if (browser) {
-            await browser.close();
+        if (context) {
+
+            try {
+                await context.close();
+            } catch (e) {}
+
         }
 
-        console.error(error);
+        console.error(
+            "ERROR:",
+            error.message
+        );
 
         return res.status(500).json({
             success: false,
             error: error.message
         });
+
     }
 
 });
 
-var port =
-    process.env.PORT || 3000;
+var port = process.env.PORT || 10000;
 
-app.listen(port, function () {
+getBrowser()
+    .then(function () {
 
-    console.log(
-        "Server running on port " + port
-    );
+        app.listen(port, function () {
+
+            console.log(
+                "Server running on port " + port
+            );
+
+        });
+
+    })
+    .catch(function (error) {
+
+        console.error(
+            "Browser startup failed:",
+            error
+        );
+
+        process.exit(1);
+
+    });
+
+process.on("SIGTERM", async function () {
+
+    if (browser) {
+        await browser.close();
+    }
+
+    process.exit(0);
+
+});
+
+process.on("SIGINT", async function () {
+
+    if (browser) {
+        await browser.close();
+    }
+
+    process.exit(0);
 
 });
