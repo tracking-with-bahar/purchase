@@ -1,78 +1,8 @@
-const express = require("express");
-const { chromium } = require("playwright");
-
-const app = express();
-
-app.use(express.json());
-
-app.use(function (req, res, next) {
-
-    res.setHeader(
-        "Access-Control-Allow-Origin",
-        "https://www.lincolnindicators.com.au"
-    );
-
-    res.setHeader(
-        "Access-Control-Allow-Methods",
-        "POST,OPTIONS"
-    );
-
-    res.setHeader(
-        "Access-Control-Allow-Headers",
-        "Content-Type"
-    );
-
-    if (req.method === "OPTIONS") {
-        return res.sendStatus(204);
-    }
-
-    next();
-
-});
-
-var browser = null;
-
-async function getBrowser() {
-
-    if (browser && browser.isConnected()) {
-        return browser;
-    }
-
-    browser = await chromium.launch({
-        headless: true,
-        args: [
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-gpu"
-        ]
-    });
-
-    browser.on("disconnected", function () {
-        browser = null;
-    });
-
-    return browser;
-
-}
-
-app.get("/", function (req, res) {
-
-    res.json({
-        success: true,
-        service: "purchase-id-resolver",
-        browser_ready: !!(
-            browser &&
-            browser.isConnected()
-        )
-    });
-
-});
-
 app.post("/resolve", async function (req, res) {
 
     var startTime = Date.now();
     var startUrl = req.body.start_url;
+    var browserCookies = req.body.cookies || "";
     var context = null;
 
     if (!startUrl) {
@@ -106,6 +36,56 @@ app.post("/resolve", async function (req, res) {
             await browserInstance.newContext({
                 serviceWorkers: "block"
             });
+
+        if (browserCookies) {
+
+            var cookies = browserCookies
+                .split(";")
+                .map(function (cookie) {
+
+                    var separator =
+                        cookie.indexOf("=");
+
+                    if (separator === -1) {
+                        return null;
+                    }
+
+                    var name =
+                        cookie
+                            .substring(0, separator)
+                            .trim();
+
+                    var value =
+                        cookie
+                            .substring(separator + 1)
+                            .trim();
+
+                    if (!name) {
+                        return null;
+                    }
+
+                    return {
+                        name: name,
+                        value: value,
+                        domain:
+                            "members.lincolnindicators.com.au",
+                        path: "/"
+                    };
+
+                })
+                .filter(function (cookie) {
+                    return cookie !== null;
+                });
+
+            if (cookies.length) {
+
+                await context.addCookies(
+                    cookies
+                );
+
+            }
+
+        }
 
         await context.route(
             "**/*",
@@ -190,33 +170,42 @@ app.post("/resolve", async function (req, res) {
 
             await new Promise(
                 function (resolve) {
-                    setTimeout(resolve, 25);
+                    setTimeout(
+                        resolve,
+                        25
+                    );
                 }
             );
 
         }
 
         try {
+
             await navigationPromise;
+
         } catch (error) {}
 
         checkUrl();
 
         if (!purchaseId) {
 
-            await page.waitForFunction(
-                function () {
+            try {
 
-                    return window.location.href.indexOf(
-                        "purchaseId="
-                    ) !== -1;
+                await page.waitForFunction(
+                    function () {
 
-                },
-                {
-                    timeout: 5000,
-                    polling: 25
-                }
-            );
+                        return window.location.href.indexOf(
+                            "purchaseId="
+                        ) !== -1;
+
+                    },
+                    {
+                        timeout: 5000,
+                        polling: 25
+                    }
+                );
+
+            } catch (error) {}
 
             checkUrl();
 
@@ -234,10 +223,18 @@ app.post("/resolve", async function (req, res) {
             Date.now() - startTime;
 
         res.json({
+
             success: true,
-            purchase_id: purchaseId,
-            final_url: finalUrl,
-            time_ms: totalTime
+
+            purchase_id:
+                purchaseId,
+
+            final_url:
+                finalUrl,
+
+            time_ms:
+                totalTime
+
         });
 
         if (context) {
@@ -264,68 +261,17 @@ app.post("/resolve", async function (req, res) {
         );
 
         return res.status(500).json({
+
             success: false,
-            error: error.message,
+
+            error:
+                error.message,
+
             time_ms:
                 Date.now() - startTime
+
         });
 
     }
 
 });
-
-var port =
-    process.env.PORT || 10000;
-
-getBrowser()
-    .then(function () {
-
-        app.listen(
-            port,
-            function () {
-
-                console.log(
-                    "Server running on port " +
-                    port
-                );
-
-            }
-        );
-
-    })
-    .catch(function (error) {
-
-        console.error(
-            "Browser startup failed:",
-            error.message
-        );
-
-        process.exit(1);
-
-    });
-
-process.on(
-    "SIGTERM",
-    async function () {
-
-        if (browser) {
-            await browser.close();
-        }
-
-        process.exit(0);
-
-    }
-);
-
-process.on(
-    "SIGINT",
-    async function () {
-
-        if (browser) {
-            await browser.close();
-        }
-
-        process.exit(0);
-
-    }
-);
