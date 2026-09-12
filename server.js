@@ -76,6 +76,12 @@ app.post("/resolve", async function (req, res) {
     var browserCookies = req.body.cookies || "";
     var context = null;
 
+    console.log("========================================");
+    console.log("New resolve request");
+    console.log("Start URL:", startUrl);
+    console.log("Browser cookies:", browserCookies);
+    console.log("========================================");
+
     if (!startUrl) {
 
         return res.status(400).json({
@@ -100,62 +106,59 @@ app.post("/resolve", async function (req, res) {
 
     try {
 
-        var browserInstance =
-            await getBrowser();
+        var browserInstance = await getBrowser();
 
-        context =
-            await browserInstance.newContext({
-                serviceWorkers: "block"
-            });
+        context = await browserInstance.newContext({
+            serviceWorkers: "block"
+        });
 
         /*
-         * Add cookies received from the browser.
-         *
-         * These are cookies readable by
-         * document.cookie on stockdoctor.com.au.
+         * Add cookies received from StockDoctor
+         * into the Render Playwright context.
          */
 
         if (browserCookies) {
 
-            var cookies = browserCookies
-                .split(";")
-                .map(function (cookie) {
+            var cookiePairs =
+                browserCookies.split("; ");
 
-                    var separator =
-                        cookie.indexOf("=");
+            var cookies = [];
 
-                    if (separator === -1) {
-                        return null;
-                    }
+            for (
+                var i = 0;
+                i < cookiePairs.length;
+                i++
+            ) {
 
-                    var name =
-                        cookie
-                            .substring(0, separator)
-                            .trim();
+                var parts =
+                    cookiePairs[i].split("=");
 
-                    var value =
-                        cookie
-                            .substring(separator + 1)
-                            .trim();
+                var name =
+                    parts.shift();
 
-                    if (!name) {
-                        return null;
-                    }
+                var value =
+                    parts.join("=");
 
-                    return {
+                if (name && value) {
+
+                    cookies.push({
                         name: name,
                         value: value,
                         domain:
                             "members.lincolnindicators.com.au",
                         path: "/"
-                    };
+                    });
 
-                })
-                .filter(function (cookie) {
-                    return cookie !== null;
-                });
+                }
+
+            }
 
             if (cookies.length) {
+
+                console.log(
+                    "Adding browser cookies to Render context:",
+                    cookies
+                );
 
                 await context.addCookies(
                     cookies
@@ -164,6 +167,14 @@ app.post("/resolve", async function (req, res) {
             }
 
         }
+
+        var page =
+            await context.newPage();
+
+        /*
+         * Block heavy resources to keep
+         * the request fast.
+         */
 
         await context.route(
             "**/*",
@@ -187,15 +198,13 @@ app.post("/resolve", async function (req, res) {
             }
         );
 
-        var page =
-            await context.newPage();
-
         var purchaseId = null;
         var finalUrl = null;
 
         var checkUrl = function () {
 
-            var currentUrl = page.url();
+            var currentUrl =
+                page.url();
 
             if (
                 currentUrl.indexOf(
@@ -222,11 +231,25 @@ app.post("/resolve", async function (req, res) {
 
         };
 
+        /*
+         * Start navigation.
+         */
+
+        console.log(
+            "Navigating to:",
+            startUrl
+        );
+
         var navigationPromise =
             page.goto(startUrl, {
                 waitUntil: "commit",
                 timeout: 15000
             });
+
+        /*
+         * Check the URL very quickly for
+         * the generated purchaseId.
+         */
 
         var startWait =
             Date.now();
@@ -265,6 +288,11 @@ app.post("/resolve", async function (req, res) {
 
         checkUrl();
 
+        /*
+         * Extra wait in case the redirect
+         * happens slightly later.
+         */
+
         if (!purchaseId) {
 
             try {
@@ -297,31 +325,63 @@ app.post("/resolve", async function (req, res) {
 
         }
 
+        /*
+         * Get ALL cookies currently stored
+         * in the Render Playwright context.
+         */
+
+        var responseCookies =
+            await context.cookies();
+
+        console.log(
+            "========================================"
+        );
+
+        console.log(
+            "Purchase ID:",
+            purchaseId
+        );
+
+        console.log(
+            "Final URL:",
+            finalUrl
+        );
+
+        console.log(
+            "Cookies returned by Members:"
+        );
+
+        console.log(
+            responseCookies
+        );
+
+        console.log(
+            "========================================"
+        );
+
         var totalTime =
             Date.now() - startTime;
 
+        /*
+         * Return purchaseId + final URL +
+         * cookies to the browser.
+         */
+
         res.json({
-
             success: true,
-
-            purchase_id:
-                purchaseId,
-
-            final_url:
-                finalUrl,
-
-            time_ms:
-                totalTime
-
+            purchase_id: purchaseId,
+            final_url: finalUrl,
+            cookies: responseCookies,
+            time_ms: totalTime
         });
 
-        if (context) {
+        /*
+         * Close the isolated context.
+         */
 
-            context.close().catch(
-                function () {}
-            );
-
-        }
+        context.close().catch(
+            function () {}
+        );
 
     } catch (error) {
 
@@ -339,15 +399,10 @@ app.post("/resolve", async function (req, res) {
         );
 
         return res.status(500).json({
-
             success: false,
-
-            error:
-                error.message,
-
+            error: error.message,
             time_ms:
                 Date.now() - startTime
-
         });
 
     }
@@ -370,7 +425,6 @@ getBrowser()
                 );
 
             }
-
         );
 
     })
